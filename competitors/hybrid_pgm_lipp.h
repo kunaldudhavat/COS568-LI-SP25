@@ -17,12 +17,11 @@ public:
     flush_threshold_ = params.empty() ? 100000 : params[0];
   }
 
-  // Virtual destructor (no override here)
   virtual ~HybridPGMLipp() { }
 
   // Bulk-load all initial data into LIPP
   uint64_t Build(const std::vector<KeyValue<KeyType>>& data,
-                 size_t num_threads) override
+                 size_t num_threads)
   {
     uint64_t t = li_.Build(data, num_threads);
     buffer_.clear();
@@ -30,8 +29,7 @@ public:
   }
 
   // First check DPGM, then fall back to LIPP
-  size_t EqualityLookup(const KeyType& key,
-                        uint32_t thread_id) const override
+  size_t EqualityLookup(const KeyType& key, uint32_t thread_id) const
   {
     size_t v = dp_.EqualityLookup(key, thread_id);
     if (v != util::NOT_FOUND && v != util::OVERFLOW) return v;
@@ -39,8 +37,7 @@ public:
   }
 
   // Insert into DPGM buffer and model; flush when threshold reached
-  void Insert(const KeyValue<KeyType>& kv,
-              uint32_t thread_id) override
+  void Insert(const KeyValue<KeyType>& kv, uint32_t thread_id)
   {
     buffer_.push_back(kv);
     dp_.Insert(kv, thread_id);
@@ -50,17 +47,21 @@ public:
   // RangeQuery across both structures
   uint64_t RangeQuery(const KeyType& lower,
                       const KeyType& upper,
-                      uint32_t thread_id) const override
+                      uint32_t thread_id) const
   {
     uint64_t res = dp_.RangeQuery(lower, upper, thread_id);
     res += li_.RangeQuery(lower, upper, thread_id);
     return res;
   }
 
-  std::string name() const override { return "HybridPGMLipp"; }
+  std::string name() const
+  {
+    return "HybridPGMLipp";
+  }
 
   // Memory footprint = sum of both indexes
-  std::size_t size() const override {
+  std::size_t size() const
+  {
     return dp_.size() + li_.size();
   }
 
