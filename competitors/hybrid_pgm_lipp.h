@@ -21,20 +21,20 @@ class HybridPGMLipp : public Base<KeyType> {
     flush_threshold_ = params.empty() ? 100000 : params[0];
   }
 
-  uint64_t Build(const std::vector<KeyValue<KeyType>>& data, size_t num_threads) override {
+  uint64_t Build(const std::vector<KeyValue<KeyType>>& data, size_t num_threads) {
     auto t = li_.Build(data, num_threads);
     std::lock_guard<std::mutex> lock(buffer_mtx_);
     buffer_.clear();
     return t;
   }
 
-  size_t EqualityLookup(const KeyType& key, uint32_t thread_id) const override {
+  size_t EqualityLookup(const KeyType& key, uint32_t thread_id) const {
     auto v = dp_.EqualityLookup(key, thread_id);
     if (v != util::NOT_FOUND && v != util::OVERFLOW) return v;
     return li_.EqualityLookup(key, thread_id);
   }
 
-  void Insert(const KeyValue<KeyType>& kv, uint32_t thread_id) override {
+  void Insert(const KeyValue<KeyType>& kv, uint32_t thread_id) {
     {
       std::lock_guard<std::mutex> lock(buffer_mtx_);
       buffer_.push_back(kv);
@@ -44,14 +44,14 @@ class HybridPGMLipp : public Base<KeyType> {
     dp_.Insert(kv, thread_id);
   }
 
-  uint64_t RangeQuery(const KeyType& lo, const KeyType& hi, uint32_t thread_id) const override {
+  uint64_t RangeQuery(const KeyType& lo, const KeyType& hi, uint32_t thread_id) const {
     auto sum = dp_.RangeQuery(lo, hi, thread_id);
     sum += li_.RangeQuery(lo, hi, thread_id);
     return sum;
   }
 
-  std::string name() const override { return "HybridPGMLipp"; }
-  std::size_t size() const override { return dp_.size() + li_.size(); }
+  std::string name() const { return "HybridPGMLipp"; }
+  std::size_t size() const { return dp_.size() + li_.size(); }
 
  private:
   DynamicPGM<KeyType, SearchClass, pgm_error> dp_;
