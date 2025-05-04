@@ -5,7 +5,7 @@ echo "Executing benchmark and saving results..."
 BENCHMARK=build/benchmark
 if [ ! -f $BENCHMARK ]; then
     echo "benchmark binary does not exist"
-    exit 1
+    exit
 fi
 
 function execute_uint64_100M() {
@@ -49,10 +49,11 @@ function execute_uint64_100M() {
 
 mkdir -p ./results
 
-for DATA in fb_100M_public_uint64 books_100M_public_uint64 osmc_100M_public_uint64; do
-    for INDEX in LIPP DynamicPGM HybridPGMLipp; do
-        execute_uint64_100M ${DATA} $INDEX
-    done
+for DATA in fb_100M_public_uint64 books_100M_public_uint64 osmc_100M_public_uint64
+do
+for INDEX in LIPP DynamicPGM HybridPGMLipp
+do
+    execute_uint64_100M ${DATA} $INDEX
 done
 
 echo "===================Benchmarking complete!===================="
