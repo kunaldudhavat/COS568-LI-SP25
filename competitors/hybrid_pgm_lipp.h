@@ -8,18 +8,19 @@
 #include <chrono>
 #include <string>
 
+#include "../benchmark.h"           // for tli::KeyValue
 #include "../util.h"
 #include "base.h"
 #include "dynamic_pgm_index.h"
 #include "lipp.h"
 
 /// A hybrid index that buffers inserts in DPGM and flushes them
-/// into LIPP asynchronously every flush_interval_ms.
+/// into LIPP asynchronously every 100 ms.
 template <class KeyType, class SearchClass, size_t pgm_error>
 class HybridPGMLipp : public Base<KeyType> {
 public:
-  // Reuse the same KeyValue type that DPGM uses
-  using KV = typename DynamicPGM<KeyType, SearchClass, pgm_error>::KeyValue;
+  // Use the common KeyValue type
+  using KV = tli::KeyValue<KeyType>;
 
   HybridPGMLipp(const std::vector<int>& params)
     : dp_(params),
@@ -32,7 +33,6 @@ public:
   }
 
   ~HybridPGMLipp() override {
-    // signal and join
     stop_flag_.store(true, std::memory_order_relaxed);
     if (flush_thread_.joinable())
       flush_thread_.join();
@@ -47,14 +47,14 @@ public:
     return t;
   }
 
-  // First check DPGM buffer, then fall back to LIPP
+  // Check DPGM first, then LIPP
   size_t EqualityLookup(const KeyType& key, uint32_t thread_id) const override {
     size_t v = dp_.EqualityLookup(key, thread_id);
     if (v != util::NOT_FOUND && v != util::OVERFLOW) return v;
     return li_.EqualityLookup(key, thread_id);
   }
 
-  // Always insert into DPGM; buffered for later flush
+  // Always insert into DPGM and buffer
   void Insert(const KV& kv, uint32_t thread_id) override {
     {
       std::lock_guard<std::mutex> lg(buffer_mtx_);
@@ -63,7 +63,7 @@ public:
     dp_.Insert(kv, thread_id);
   }
 
-  // Range query across both
+  // Range query over both
   uint64_t RangeQuery(const KeyType& lo, const KeyType& hi, uint32_t thread_id) const override {
     uint64_t res = dp_.RangeQuery(lo, hi, thread_id);
     res += li_.RangeQuery(lo, hi, thread_id);
@@ -73,7 +73,6 @@ public:
   std::string name() const override { return "HybridPGMLipp"; }
 
   std::size_t size() const override {
-    // DPGM + LIPP + buffered keys
     return dp_.size()
          + li_.size()
          + buffer_.size() * sizeof(KV);
@@ -90,7 +89,7 @@ private:
   std::atomic<bool>  stop_flag_;
   mutable std::mutex buffer_mtx_;
 
-  // move all buffered entries into LIPP and reset DPGM
+  // Move buffered entries into LIPP and reset DPGM
   void flush() {
     std::vector<KV> tmp;
     {
@@ -104,7 +103,7 @@ private:
     }
   }
 
-  // flush loop runs in background
+  // Background flush loop
   void flush_loop() {
     while (!stop_flag_.load(std::memory_order_relaxed)) {
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
