@@ -11,7 +11,8 @@ class Lipp : public Base<KeyType> {
  public:
   Lipp(const std::vector<int>& params) {}
 
-  uint64_t Build(const std::vector<KeyValue<KeyType>>& data, size_t num_threads) override {
+  // Removed 'override' here
+  uint64_t Build(const std::vector<KeyValue<KeyType>>& data, size_t num_threads) {
     std::vector<std::pair<KeyType, uint64_t>> loading_data;
     loading_data.reserve(data.size());
     for (auto &itm : data)
@@ -21,13 +22,13 @@ class Lipp : public Base<KeyType> {
     });
   }
 
-  size_t EqualityLookup(const KeyType& lookup_key, uint32_t thread_id) const override {
+  size_t EqualityLookup(const KeyType& lookup_key, uint32_t thread_id) const {
     uint64_t value;
     if (!lipp_.find(lookup_key, value)) return util::NOT_FOUND;
     return value;
   }
 
-  uint64_t RangeQuery(const KeyType& lower_key, const KeyType& upper_key, uint32_t thread_id) const override {
+  uint64_t RangeQuery(const KeyType& lower_key, const KeyType& upper_key, uint32_t thread_id) const {
     auto it = lipp_.lower_bound(lower_key);
     uint64_t result = 0;
     while (it != lipp_.end() && it->comp.data.key <= upper_key) {
@@ -37,13 +38,13 @@ class Lipp : public Base<KeyType> {
     return result;
   }
 
-  void Insert(const KeyValue<KeyType>& data, uint32_t thread_id) override {
+  void Insert(const KeyValue<KeyType>& data, uint32_t thread_id) {
     lipp_.insert(data.key, data.value);
   }
 
-  std::string name() const override { return "LIPP"; }
-  std::size_t size() const override { return lipp_.index_size(); }
-  bool applicable(bool unique, bool range_query, bool insert, bool multithread, const std::string&) const override {
+  std::string name() const { return "LIPP"; }
+  std::size_t size() const { return lipp_.index_size(); }
+  bool applicable(bool unique, bool range_query, bool insert, bool multithread, const std::string&) const {
     return unique && !multithread;
   }
 
