@@ -5,11 +5,12 @@ echo "Executing benchmark and saving results..."
 BENCHMARK=build/benchmark
 if [ ! -f $BENCHMARK ]; then
     echo "benchmark binary does not exist"
-    exit
+    exit 1
 fi
 
 function execute_uint64_100M() {
     echo "Executing operations for $1 and index $2"
+
     echo "Executing lookup-only workload"
     if [[ $2 == "HybridPGMLipp" ]]; then
         $BENCHMARK ./data/$1 ./data/$1_ops_2M_0.000000rq_0.500000nl_0.000000i \
@@ -51,9 +52,10 @@ mkdir -p ./results
 
 for DATA in fb_100M_public_uint64 books_100M_public_uint64 osmc_100M_public_uint64
 do
-for INDEX in LIPP DynamicPGM HybridPGMLipp
-do
-    execute_uint64_100M ${DATA} $INDEX
+    for INDEX in LIPP DynamicPGM HybridPGMLipp
+    do
+        execute_uint64_100M ${DATA} $INDEX
+    done
 done
 
 echo "===================Benchmarking complete!===================="
@@ -61,31 +63,27 @@ echo "===================Benchmarking complete!===================="
 # add header for csv files
 for FILE in ./results/*.csv
 do
-    # Check if file contains 0.000000i to determine workload type
     if [[ $FILE == *0.000000i* ]]; then
-        # For lookup-only workload
-        # Remove existing header if present
+        # lookup-only
         if head -n 1 $FILE | grep -q "index_name"; then
-            sed -i '1d' $FILE  # Delete the first line
+            sed -i '1d' $FILE
         fi
-        # Add the header
         sed -i '1s/^/index_name,build_time_ns1,build_time_ns2,build_time_ns3,index_size_bytes,lookup_throughput_mops1,lookup_throughput_mops2,lookup_throughput_mops3,search_method,value\n/' $FILE
+
     elif [[ $FILE == *mix* ]]; then
-        # For insert+lookup workload
-        # Remove existing header if present
+        # mixed workload
         if head -n 1 $FILE | grep -q "index_name"; then
-            sed -i '1d' $FILE  # Delete the first line
+            sed -i '1d' $FILE
         fi
-        # Add the header
         sed -i '1s/^/index_name,build_time_ns1,build_time_ns2,build_time_ns3,index_size_bytes,mixed_throughput_mops1,mixed_throughput_mops2,mixed_throughput_mops3,search_method,value\n/' $FILE
+
     else
-        # For insert+lookup workload
-        # Remove existing header if present
+        # insert+lookup
         if head -n 1 $FILE | grep -q "index_name"; then
-            sed -i '1d' $FILE  # Delete the first line
+            sed -i '1d' $FILE
         fi
-        # Add the header
         sed -i '1s/^/index_name,build_time_ns1,build_time_ns2,build_time_ns3,index_size_bytes,insert_throughput_mops1,lookup_throughput_mops1,insert_throughput_mops2,lookup_throughput_mops2,insert_throughput_mops3,lookup_throughput_mops3,search_method,value\n/' $FILE
     fi
+
     echo "Header set for $FILE"
 done
