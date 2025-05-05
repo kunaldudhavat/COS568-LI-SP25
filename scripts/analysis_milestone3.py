@@ -17,7 +17,7 @@ def milestone3_analysis():
 
     for wname, suffix in workloads.items():
         # Set up a 2×3 grid: row 0 = throughput, row 1 = index size
-        fig, axs = plt.subplots(2, len(datasets), figsize=(4*len(datasets), 8))
+        fig, axs = plt.subplots(2, len(datasets), figsize=(4*len(datasets), 8), squeeze=False)
 
         for col, ds in enumerate(datasets):
             # Construct filename
