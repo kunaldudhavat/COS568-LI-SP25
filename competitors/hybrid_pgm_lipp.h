@@ -28,7 +28,7 @@ class HybridPGMLipp : public Base<KeyType> {
     flusher_ = std::thread(&HybridPGMLipp::flushLoop, this);
   }
 
-  ~HybridPGMLipp() override {
+  ~HybridPGMLipp()  {
     {
       std::lock_guard<std::mutex> lk(mu_);
       shutting_down_ = true;
@@ -39,14 +39,14 @@ class HybridPGMLipp : public Base<KeyType> {
 
   // Bulk‐load initial data directly into LIPP
   uint64_t Build(const std::vector<KeyValue<KeyType>>& data,
-                 size_t num_threads) override
+                 size_t num_threads) 
   {
     return li_.Build(data, num_threads);
   }
 
   // point‐lookup: try DPGM first, then LIPP
   size_t EqualityLookup(const KeyType& key,
-                        uint32_t thread_id) const override
+                        uint32_t thread_id) const 
   {
     auto v = dp_.EqualityLookup(key, thread_id);
     if (v != util::NOT_FOUND && v != util::OVERFLOW) return v;
@@ -56,7 +56,7 @@ class HybridPGMLipp : public Base<KeyType> {
   // range‐sum across both
   uint64_t RangeQuery(const KeyType& lo,
                       const KeyType& hi,
-                      uint32_t thread_id) const override
+                      uint32_t thread_id) const 
   {
     return dp_.RangeQuery(lo, hi, thread_id)
          + li_.RangeQuery(lo, hi, thread_id);
@@ -64,7 +64,7 @@ class HybridPGMLipp : public Base<KeyType> {
 
   // insert into DPGM, trigger flush when threshold reached
   void Insert(const KeyValue<KeyType>& kv,
-              uint32_t thread_id) override
+              uint32_t thread_id) 
   {
     dp_.Insert(kv, thread_id);
     {
@@ -78,15 +78,15 @@ class HybridPGMLipp : public Base<KeyType> {
     }
   }
 
-  std::string name() const override  { return "HybridPGMLipp"; }
+  std::string name() const   { return "HybridPGMLipp"; }
 
   // approximate total memory footprint
-  std::size_t size() const override {
+  std::size_t size() const  {
     return dp_.size() + li_.size();
   }
 
   bool applicable(bool unique, bool rq, bool ins, bool mt,
-                  const std::string&) const override
+                  const std::string&) const 
   {
     return unique && !mt;
   }
