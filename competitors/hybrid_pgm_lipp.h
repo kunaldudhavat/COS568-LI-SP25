@@ -22,11 +22,10 @@ public:
         params.empty() ? 100000u
                        : static_cast<size_t>(params[0])
       ),
-      _dpgm(params),
+      _dpgm(params),    // <-- now matches DynamicPGM<Key,Searcher,PGMError>
       _lipp_ptr(nullptr),
       _shutdown(false)
   {
-    // bootstrap an empty core‐LIPP
     _lipp_ptr.store(
       new LIPP<Key, Value, true>(),
       std::memory_order_release
@@ -79,7 +78,7 @@ private:
       batch.swap(_buffer);
     }
     // reset DPGM
-    _dpgm = DynamicPGM<Key, Value, Searcher, PGMError>(std::vector<int>());
+    _dpgm = DynamicPGM<Key, Searcher, PGMError>(std::vector<int>());
     background_flush(std::move(batch));
   }
 
@@ -136,10 +135,14 @@ private:
     delete old;
   }
 
-  const size_t                             _flush_threshold;
-  DynamicPGM<Key, Value, Searcher, PGMError> _dpgm;
-  std::atomic<LIPP<Key, Value, true>*>       _lipp_ptr;
-  mutable std::mutex                       _buffer_mu;
-  std::vector<std::pair<Key,Value>>        _buffer;
-  std::atomic<bool>                        _shutdown;
+private:
+  const size_t                                _flush_threshold;
+
+  // ** only three template args here **
+  DynamicPGM<Key, Searcher, PGMError>         _dpgm;
+
+  std::atomic<LIPP<Key, Value, true>*>        _lipp_ptr;
+  mutable std::mutex                          _buffer_mu;
+  std::vector<std::pair<Key,Value>>           _buffer;
+  std::atomic<bool>                           _shutdown;
 };
