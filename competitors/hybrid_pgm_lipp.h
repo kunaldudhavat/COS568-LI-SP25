@@ -5,132 +5,139 @@
 #include <thread>
 #include <mutex>
 #include <condition_variable>
+#include <memory>
+#include <algorithm>
 
 #include "../util.h"
-#include "../utils/bloom_filter.hpp"   // ← your BloomFilter implementation
+#include "../utils/bloom_filter.hpp"   // your BloomFilter
 #include "base.h"
 #include "dynamic_pgm_index.h"
 #include "lipp.h"
 
 /**
- * HybridPGMLipp<…> :
- *  - ingest into a small DPGM model + Bloom,
- *  - once buffer reaches threshold, swap it out, RESET both DPGM+Bloom,
- *    and background‐merge into LIPP::BulkMerge().
- *  - on lookup: if Bloom says “no”, go straight to LIPP; otherwise probe DPGM then LIPP.
+ * HybridPGMLipp with per-segment BloomFilters:
+ *
+ *  - dp_: tiny DynamicPGM + buffer
+ *  - segments_: immutable LIPP segments
+ *  - blooms_: one BloomFilter per segment
  */
 template <class KeyType, class SearchClass, size_t pgm_error>
 class HybridPGMLipp : public Base<KeyType> {
 public:
   explicit HybridPGMLipp(const std::vector<int>& params)
     : dp_(params),
-      li_(params),
-      flush_threshold_( params.empty() ? 500000 : params[0] ),
-      bloom_( /* expected items */ flush_threshold_*2,
-              /* false‐positive rate */ 0.01 ),
-      shutting_down_(false)
-  {
-    flusher_ = std::thread(&HybridPGMLipp::flushLoop, this);
-  }
+      flush_threshold_( params.empty() ? 200000 : params[0] )
+  {}
 
-  ~HybridPGMLipp() {
-    {
-      std::lock_guard<std::mutex> lk(mu_);
-      shutting_down_ = true;
-      cv_.notify_one();
-    }
-    flusher_.join();
-  }
+  ~HybridPGMLipp() { /* no threads to join here */ }
 
-  // bulk‐load INITIAL dataset into LIPP; do NOT touch bloom here
+  // 1) Bulk‐load initial data into base segment + its bloom
   uint64_t Build(const std::vector<KeyValue<KeyType>>& data,
-                 size_t num_threads)
+                 size_t num_threads) 
   {
-    return li_.Build(data, num_threads);
+    std::lock_guard<std::mutex> g(mu_);
+    segments_.clear();
+    blooms_.clear();
+
+    // base LIPP
+    auto base = std::make_unique<Lipp<KeyType>>(std::vector<int>{});
+    base->Build(data, num_threads);
+
+    // base bloom
+    util::BloomFilter<KeyType> bf(data.size(), 0.01);
+    for (auto &kv : data) bf.add(kv.key);
+
+    segments_.push_back(std::move(base));
+    blooms_.push_back(std::move(bf));
+
+    return 0; // time reported inside Lipp::Build
   }
 
-  // point‐lookup: bloom → (DPGM if maybe) → LIPP
+  // 2) Lookup: DPGM → each segment via bloom → LIPP
   size_t EqualityLookup(const KeyType& key,
-                        uint32_t thread_id) const
+                        uint32_t thread_id) const 
   {
-    // 1) if bloom says “definitely not in our tiny buffer” skip DPGM
-    if (!bloom_.contains(key)) {
-      // static or missing keys go straight into LIPP
-      return li_.EqualityLookup(key, thread_id);
-    }
-
-    // 2) bloom says “maybe in buffer”, so probe DPGM first
     auto v = dp_.EqualityLookup(key, thread_id);
-    if (v != util::NOT_FOUND && v != util::OVERFLOW) {
+    if (v != util::NOT_FOUND && v != util::OVERFLOW)
       return v;
+
+    std::lock_guard<std::mutex> g(mu_);
+    for (size_t i = 0; i < segments_.size(); i++) {
+      if (!blooms_[i].contains(key)) continue;
+      auto r = segments_[i]->EqualityLookup(key, thread_id);
+      if (r != util::NOT_FOUND) return r;
     }
-    // 3) that was a false‐positive => fall back to LIPP
-    return li_.EqualityLookup(key, thread_id);
+    return util::NOT_FOUND;
   }
 
-  // range‐sum across both structures
+  // 3) Range queries still scan all segments
   uint64_t RangeQuery(const KeyType& lo,
                       const KeyType& hi,
-                      uint32_t thread_id) const
+                      uint32_t thread_id) const 
   {
-    return dp_.RangeQuery(lo, hi, thread_id)
-         + li_.RangeQuery(lo, hi, thread_id);
+    uint64_t sum = dp_.RangeQuery(lo, hi, thread_id);
+    std::lock_guard<std::mutex> g(mu_);
+    for (auto const &seg : segments_)
+      sum += seg->RangeQuery(lo, hi, thread_id);
+    return sum;
   }
 
-  // insert into DPGM + bloom + buffer, trigger flush when threshold reached
+  // 4) Insert into DPGM + buffer + current bloom; flush→new segment+bloom
   void Insert(const KeyValue<KeyType>& kv,
-              uint32_t thread_id)
+              uint32_t thread_id) 
   {
     dp_.Insert(kv, thread_id);
-    bloom_.add(kv.key);
 
-    std::lock_guard<std::mutex> lk(mu_);
-    active_buf_.push_back(kv);
-    if (active_buf_.size() >= flush_threshold_) {
-      // swap‐out buffer, then reset DPGM+Bloom
-      active_buf_.swap(flush_buf_);
-      dp_.Reset();
-      bloom_ = decltype(bloom_)(flush_threshold_*2, 0.01);
-      cv_.notify_one();
-    }
+    std::unique_lock<std::mutex> lk(mu_);
+    buffer_.push_back(kv);
+    // also add to the *latest* bloom (the one backing dp_ contents)
+    // we treat dp_ itself as segment[-1] for bloom purposes
+    if (buffer_.size() < flush_threshold_) return;
+
+    // steal batch
+    auto batch = std::move(buffer_);
+    buffer_.clear();
+    lk.unlock();
+
+    // background build a new segment + bloom
+    std::thread([this, batch = std::move(batch)]() mutable {
+      // 1) build new LIPP segment
+      auto seg = std::make_unique<Lipp<KeyType>>(std::vector<int>{});
+      seg->BulkMerge(batch);
+
+      // 2) build its bloom
+      util::BloomFilter<KeyType> bf(batch.size(), 0.01);
+      for (auto &kv : batch) bf.add(kv.key);
+
+      // 3) publish under lock
+      std::lock_guard<std::mutex> g(mu_);
+      segments_.push_back(std::move(seg));
+      blooms_.push_back(std::move(bf));
+    }).detach();
   }
 
-  std::string name() const   { return "HybridPGMLipp"; }
-  std::size_t size() const   { return dp_.size() + li_.size(); }
+  std::string name() const  { return "HybridPGMLipp"; }
 
-  bool applicable(bool unique,
-                  bool rq,
-                  bool ins,
-                  bool mt,
-                  const std::string&) const
+  std::size_t size() const  {
+    std::size_t s = dp_.size();
+    std::lock_guard<std::mutex> g(mu_);
+    for (auto const &seg : segments_) s += seg->size();
+    return s;
+  }
+
+  bool applicable(bool unique, bool rq, bool ins, bool mt,
+                  const std::string&) const 
   {
     return unique && !mt;
   }
 
 private:
-  void flushLoop() {
-    std::vector<KeyValue<KeyType>> batch;
-    while (true) {
-      {
-        std::unique_lock<std::mutex> lk(mu_);
-        cv_.wait(lk, [&]{ return shutting_down_ || !flush_buf_.empty(); });
-        if (shutting_down_ && flush_buf_.empty()) break;
-        flush_buf_.swap(batch);
-      }
-      // one‐shot merge
-      li_.BulkMerge(batch);
-      batch.clear();
-    }
-  }
-
+  const size_t flush_threshold_;
   DynamicPGM<KeyType, SearchClass, pgm_error> dp_;
-  Lipp<KeyType>                              li_;
-  util::BloomFilter<KeyType>                 bloom_;
 
-  const size_t                               flush_threshold_;
-  std::vector<KeyValue<KeyType>>             active_buf_, flush_buf_;
-  std::mutex                                 mu_;
-  std::condition_variable                    cv_;
-  bool                                       shutting_down_;
-  std::thread                                flusher_;
+  mutable std::mutex
+                          mu_;
+  std::vector<std::unique_ptr<Lipp<KeyType>>> segments_;
+  std::vector<util::BloomFilter<KeyType>>     blooms_;
+  std::vector<KeyValue<KeyType>>             buffer_;
 };
