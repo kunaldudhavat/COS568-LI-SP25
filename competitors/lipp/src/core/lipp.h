@@ -885,6 +885,22 @@ private:
 
         return path[0];
     }
+    // helper for extract_all(): in-order walk
+    void extract_all_rec(Node* node,
+                        std::vector<std::pair<T,P>>& out) const
+    {
+        for (int i = 0; i < node->num_items; ++i) {
+            if (BITMAP_GET(node->child_bitmap, i)) {
+                extract_all_rec(node->items[i].comp.child, out);
+            }
+            else if (!BITMAP_GET(node->none_bitmap, i)) {
+                out.emplace_back(
+                    node->items[i].comp.data.key,
+                    node->items[i].comp.data.value
+                );
+            }
+        }
+    }
 
 // Reimplement find, add lower_bound
 public:
@@ -1005,6 +1021,13 @@ public:
         it.it = nullptr;
         return it;
     }
+
+    std::vector<std::pair<T,P>> extract_all() const {
+        std::vector<std::pair<T,P>> out;
+        out.reserve(root->size);    // rough pre-allocation
+        extract_all_rec(root, out);
+        return out;
+      }
 };
 
 

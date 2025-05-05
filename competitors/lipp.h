@@ -3,90 +3,92 @@
 #include "./lipp/src/core/lipp.h"
 #include "base.h"
 
+#include <algorithm>
+#include <vector>
+
+/**
+ * LIPP wrapper: add true bulk‐merge support for batches of keys.
+ */
 template<class KeyType>
 class Lipp : public Base<KeyType> {
-public:
+ public:
   Lipp(const std::vector<int>& params) {}
 
-  // build from scratch
-  uint64_t Build(const std::vector<KeyValue<KeyType>>& data,
-                 size_t /*num_threads*/) {
-    std::vector<std::pair<KeyType,uint64_t>> raw;
-    raw.reserve(data.size());
-    for (auto &kv : data) raw.emplace_back(kv.key, kv.value);
+  // Build from scratch
+  uint64_t Build(const std::vector<KeyValue<KeyType>>& data, size_t num_threads) {
+    std::vector<std::pair<KeyType, uint64_t>> loading;
+    loading.reserve(data.size());
+    for (auto &kv : data) loading.emplace_back(kv.key, kv.value);
     return util::timing([&] {
-      core_.bulk_load(raw.data(), raw.size());
+      lipp_.bulk_load(loading.data(), loading.size());
     });
   }
 
-  size_t EqualityLookup(const KeyType& key, uint32_t /*tid*/) const {
-    uint64_t v;
-    return core_.find(key, v) ? v : util::NOT_FOUND;
+  // Point‐lookup
+  size_t EqualityLookup(const KeyType& lookup_key, uint32_t thread_id) const {
+    uint64_t value;
+    if (!lipp_.find(lookup_key, value)) return util::NOT_FOUND;
+    return value;
   }
 
-  uint64_t RangeQuery(const KeyType& lo,
-                      const KeyType& hi,
-                      uint32_t /*tid*/) const {
-    auto it = core_.lower_bound(lo);
+  // Range query
+  uint64_t RangeQuery(const KeyType& lo, const KeyType& hi, uint32_t thread_id) const {
+    auto it = lipp_.lower_bound(lo);
     uint64_t sum = 0;
-    while (it != core_.end() && it->comp.data.key <= hi) {
+    while (it != lipp_.end() && it->comp.data.key <= hi) {
       sum += it->comp.data.value;
       ++it;
     }
     return sum;
   }
 
-  void Insert(const KeyValue<KeyType>& kv, uint32_t /*tid*/) {
-    core_.insert(kv.key, kv.value);
+  // Insert single key
+  void Insert(const KeyValue<KeyType>& kv, uint32_t thread_id) {
+    lipp_.insert(kv.key, kv.value);
   }
 
-  std::string name() const    { return "LIPP"; }
-  std::size_t size() const    { return core_.index_size(); }
-  bool applicable(bool unique, bool range, bool ins, bool mt, const std::string&)
-    const { return unique && !mt; }
+  std::string name() const { return "LIPP"; }
+  std::size_t size() const  { return lipp_.index_size(); }
+
+  bool applicable(bool unique,
+                  bool range_query,
+                  bool insert,
+                  bool multithread,
+                  const std::string&) const {
+    return unique && !multithread;
+  }
 
   /**
-   * Bulk‐merge [batch] into the existing index in O(N + M) instead of O(N·M).
+   * True bulk‐merge:
+   *  1) pull out all existing (key,value) pairs,
+   *  2) append the new sorted batch,
+   *  3) sort the combined list,
+   *  4) rebuild via a single bulk_load().
    */
   void BulkMerge(const std::vector<KeyValue<KeyType>>& batch) {
-    // 1) extract current content
+    // 1) extract all existing entries
+    auto existing = lipp_.extract_all();  // returns vector<pair<KeyType,uint64_t>>
     std::vector<KeyValue<KeyType>> all;
-    all.reserve(core_.index_size());  // ≈ number of entries
-    extract_all(core_.root, all);
-
+    all.reserve(existing.size() + batch.size());
+    for (auto &p : existing) {
+      all.push_back({p.first, p.second});
+    }
     // 2) append new batch
     all.insert(all.end(), batch.begin(), batch.end());
-
-    // 3) sort
+    // 3) sort by key
     std::sort(all.begin(), all.end(),
               [](auto &a, auto &b){ return a.key < b.key; });
-
     // 4) rebuild in one shot
     std::vector<std::pair<KeyType,uint64_t>> raw;
     raw.reserve(all.size());
-    for (auto &kv : all) raw.emplace_back(kv.key, kv.value);
-
+    for (auto &kv : all) {
+      raw.emplace_back(kv.key, kv.value);
+    }
     util::timing([&] {
-      core_.bulk_load(raw.data(), raw.size());
+      lipp_.bulk_load(raw.data(), raw.size());
     });
   }
 
-private:
-  // recursive in‐order traversal
-  void extract_all(typename LIPP<KeyType,uint64_t>::Node* node,
-                   std::vector<KeyValue<KeyType>>& out) {
-    if (!node) return;
-    for (int i = 0; i < node->num_items; ++i) {
-      if (BITMAP_GET(node->child_bitmap, i)) {
-        extract_all(node->items[i].comp.child, out);
-      } else if (!BITMAP_GET(node->none_bitmap, i)) {
-        KeyValue<KeyType> kv{ node->items[i].comp.data.key,
-                              node->items[i].comp.data.value };
-        out.push_back(kv);
-      }
-    }
-  }
-
-  // the real LIPP
-  LIPP<KeyType, uint64_t> core_;
+ private:
+  LIPP<KeyType, uint64_t> lipp_;
 };
