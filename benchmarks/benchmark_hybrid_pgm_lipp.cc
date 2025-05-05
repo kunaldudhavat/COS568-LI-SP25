@@ -9,11 +9,14 @@ void benchmark_64_hybrid_pgm_lipp(tli::Benchmark<uint64_t>& benchmark,
                                   bool pareto,
                                   const std::vector<int>& params) {
   if (!pareto) {
-    // Single-threshold run
-    benchmark.template Run<HybridPGMLipp<uint64_t, Searcher, 16>>(params);
+    // using the new “sweet-spot” threshold
+    benchmark.template Run<HybridPGMLipp<uint64_t, Searcher, 16>>({2000000});
   } else {
-    // Sweep thresholds: 50K,100K,200K,500K,1M
-    const std::vector<int> thresholds = {50000, 100000, 200000, 500000, 1000000};
+    // Sweep thresholds: 50K, 100K, 200K, 500K, 1M, 2M, 5M
+    const std::vector<int> thresholds = {
+        50000, 100000, 200000, 500000,
+        1000000, 2000000, 5000000
+    };
     for (auto t : thresholds) {
       benchmark.template Run<HybridPGMLipp<uint64_t, Searcher, 16>>({t});
     }
