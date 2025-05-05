@@ -8,7 +8,7 @@
 #include <algorithm>
 
 #include "dynamic_pgm_index.h"   // your DPGM impl
-#include "lipp.h"                // your LIPP impl
+#include "lipp.h"                // the core LIPP<T,P,USE_FMCD> class
 
 template <
     typename Key,
@@ -18,27 +18,37 @@ template <
 >
 class HybridPGMLipp {
 public:
-  // 1) Primary constructor: threshold in keys before background‐flush
-  explicit HybridPGMLipp(size_t flush_threshold = 100000)
-    : _flush_threshold(flush_threshold),
-      _dpgm(),
+  // 1) Main constructor: take a vector<int> of params[0]=flush_threshold
+  explicit HybridPGMLipp(const std::vector<int>& params)
+    : _flush_threshold(
+        params.empty()
+          ? 100000u
+          : static_cast<size_t>(params[0])
+      ),
+      // ** pass the params vector into DynamicPGM **
+      _dpgm(params),
       _lipp_ptr(nullptr),
       _shutdown(false)
   {
-    // bootstrap an empty LIPP
-    _lipp_ptr.store(new LIPP<Key,Value,true>(), std::memory_order_release);
+    // bootstrap an empty core‐LIPP
+    _lipp_ptr.store(new LIPP<Key,Value,true>(),
+                    std::memory_order_release);
   }
 
-  // 2) Overload for the benchmark harness (vector<int> params)
-  //    it just picks params[0] as your threshold.
-  explicit HybridPGMLipp(const std::vector<int>& params)
-    : HybridPGMLipp( params.empty() ? 100000u
-                                    : static_cast<size_t>(params[0]) )
-  {}
+  // 2) Fallback if benchmark harness calls size_t‐only ctor
+  explicit HybridPGMLipp(size_t flush_threshold)
+    : _flush_threshold(flush_threshold),
+      // give DynamicPGM an empty param list
+      _dpgm(std::vector<int>()),
+      _lipp_ptr(nullptr),
+      _shutdown(false)
+  {
+    _lipp_ptr.store(new LIPP<Key,Value,true>(),
+                    std::memory_order_release);
+  }
 
   ~HybridPGMLipp() {
     _shutdown.store(true, std::memory_order_relaxed);
-    // no thread to join here: flush happens inline on swap
     delete _lipp_ptr.load(std::memory_order_acquire);
   }
 
@@ -47,7 +57,7 @@ public:
     _dpgm.insert({k, v});
     {
       std::lock_guard<std::mutex> g(_buffer_mu);
-      _buffer.emplace_back(k,v);
+      _buffer.emplace_back(k, v);
     }
     if (_buffer.size() >= _flush_threshold) {
       flush_now();
@@ -65,14 +75,12 @@ public:
 private:
   // immediately flush on calling thread
   void flush_now() {
-    // steal buffer
     std::vector<std::pair<Key,Value>> batch;
     {
       std::lock_guard<std::mutex> g(_buffer_mu);
       batch.swap(_buffer);
     }
-    _dpgm = {};                // reset tiny DPGM
-    // merge + rebuild
+    _dpgm = DynamicPGM<Key,Searcher,PGMError>(std::vector<int>()); // reset DPGM
     background_flush(std::move(batch));
   }
 
@@ -127,16 +135,16 @@ private:
 private:
   const size_t _flush_threshold;
 
-  // tiny, write‐buffer model
-  DynamicPGM<Key,Value,Searcher,PGMError> _dpgm;
+  // ** fixed: only 3 template args here **
+  DynamicPGM<Key,Searcher,PGMError>     _dpgm;
 
   // big, read‐optimized LIPP pointer
-  std::atomic<LIPP<Key,Value,true>*> _lipp_ptr;
+  std::atomic<LIPP<Key,Value,true>*>    _lipp_ptr;
 
   // insertion buffer
-  mutable std::mutex _buffer_mu;
-  std::vector<std::pair<Key,Value>> _buffer;
+  mutable std::mutex                    _buffer_mu;
+  std::vector<std::pair<Key,Value>>     _buffer;
 
-  // shutdown flag (not strictly needed here)
-  std::atomic<bool> _shutdown;
+  // shutdown flag
+  std::atomic<bool>                     _shutdown;
 };
