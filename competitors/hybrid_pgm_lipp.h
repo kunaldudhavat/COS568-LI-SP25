@@ -2,11 +2,12 @@
 
 #include <atomic>
 #include <mutex>
+#include <thread>
 #include <vector>
 #include <algorithm>
 
 #include "dynamic_pgm_index.h"   // your DynamicPGM implementation
-#include "lipp.h"                // the core LIPP<T,P,USE_FMCD> class
+#include "lipp.h"                // the core LIPP<Key,Value,USE_FMCD> class
 
 template <
     typename Key,
@@ -16,7 +17,7 @@ template <
 >
 class HybridPGMLipp {
 public:
-  // Primary constructor: params[0] = flush threshold
+  // 1) Main constructor: params[0] = flush threshold
   explicit HybridPGMLipp(const std::vector<int>& params)
     : _flush_threshold(
         params.empty() ? 100000u
@@ -26,23 +27,19 @@ public:
       _lipp_ptr(nullptr),
       _shutdown(false)
   {
-    _lipp_ptr.store(
-      new LIPP<Key, Value, true>(),
-      std::memory_order_release
-    );
+    _lipp_ptr.store(new LIPP<Key, Value, true>(),
+                    std::memory_order_release);
   }
 
-  // Fallback if harness only passes a size_t
+  // 2) Fallback if harness only passes size_t
   explicit HybridPGMLipp(size_t flush_threshold)
     : _flush_threshold(flush_threshold),
       _dpgm(std::vector<int>()),
       _lipp_ptr(nullptr),
       _shutdown(false)
   {
-    _lipp_ptr.store(
-      new LIPP<Key, Value, true>(),
-      std::memory_order_release
-    );
+    _lipp_ptr.store(new LIPP<Key, Value, true>(),
+                    std::memory_order_release);
   }
 
   ~HybridPGMLipp() {
@@ -72,7 +69,8 @@ public:
 
 private:
   void flush_now() {
-    std::vector<std::pair<Key,Value>> batch;
+    // steal the buffered inserts
+    std::vector<std::pair<Key, Value>> batch;
     {
       std::lock_guard<std::mutex> lock(_buffer_mu);
       batch.swap(_buffer);
@@ -82,12 +80,12 @@ private:
     background_flush(std::move(batch));
   }
 
-  void background_flush(std::vector<std::pair<Key,Value>> batch) {
+  void background_flush(std::vector<std::pair<Key, Value>> batch) {
     // 1) snapshot old LIPP
     auto old = _lipp_ptr.load(std::memory_order_acquire);
 
-    // 2) extract sorted old contents
-    std::vector<std::pair<Key,Value>> all;
+    // 2) extract all existing entries
+    std::vector<std::pair<Key, Value>> all;
     all.reserve(old->index_size());
     old->extract_all_rec(old->get_root(), all);
 
@@ -95,7 +93,7 @@ private:
     std::sort(batch.begin(), batch.end(),
               [](auto &a, auto &b){ return a.first < b.first; });
 
-    // 4) merge two sorted arrays
+    // 4) merge two sorted lists
     std::vector<Key>   keys;
     std::vector<Value> vals;
     keys.reserve(all.size() + batch.size());
@@ -126,7 +124,7 @@ private:
     // 5) build a fresh LIPP
     auto fresh = new LIPP<Key, Value, true>();
     fresh->bulk_load(
-      reinterpret_cast<std::pair<Key,Value>*>(keys.data()),
+      reinterpret_cast<std::pair<Key, Value>*>(keys.data()),
       int(keys.size())
     );
 
@@ -137,12 +135,9 @@ private:
 
 private:
   const size_t                                _flush_threshold;
-
-  // ** only three template args here **
-  DynamicPGM<Key, Searcher, PGMError>         _dpgm;
-
+  DynamicPGM<Key, Searcher, PGMError>         _dpgm;      // <-- fixed: only 3 template args
   std::atomic<LIPP<Key, Value, true>*>        _lipp_ptr;
   mutable std::mutex                          _buffer_mu;
-  std::vector<std::pair<Key,Value>>           _buffer;
+  std::vector<std::pair<Key, Value>>          _buffer;
   std::atomic<bool>                           _shutdown;
 };
