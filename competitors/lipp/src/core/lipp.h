@@ -179,6 +179,16 @@ public:
         delete[] values;
     }
 
+     /**
+     * Append a sorted batch into an already‐built index.
+     * (Naïve implementation—just call insert() on each pair.)
+     */
+    void bulk_load_append(const V* vs, int num_keys) {
+        for (int i = 0; i < num_keys; ++i) {
+            insert(vs[i].first, vs[i].second);
+        }
+    }
+
     void show() const {
         printf("============= SHOW LIPP ================\n");
 
