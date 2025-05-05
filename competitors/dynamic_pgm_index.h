@@ -76,14 +76,14 @@ class DynamicPGM : public Competitor<KeyType, SearchClass> {
     return { SearchClass::name(), std::to_string(pgm_error) };
   }
 
-  /// Extract-and-clear PGM’s internal insertion buffer.
-  std::vector<KeyValue<KeyType>> ExtractBuffer() {
-    auto raw = pgm_.extract_buffer();
-    std::vector<KeyValue<KeyType>> out;
-    out.reserve(raw.size());
-    for (auto &p : raw) out.push_back({p.first, p.second});
-    return out;
-  }
+  // /// Extract-and-clear PGM’s internal insertion buffer.
+  // std::vector<KeyValue<KeyType>> ExtractBuffer() {
+  //   auto raw = pgm_.extract_buffer();
+  //   std::vector<KeyValue<KeyType>> out;
+  //   out.reserve(raw.size());
+  //   for (auto &p : raw) out.push_back({p.first, p.second});
+  //   return out;
+  // }
 
   /// Completely reset PGM to empty
   void Reset() {
