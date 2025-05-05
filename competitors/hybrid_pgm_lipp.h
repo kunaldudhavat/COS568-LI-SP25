@@ -7,17 +7,17 @@
 #include <condition_variable>
 
 #include "../util.h"
-#include "../utils/bloom_filter.hpp"   // <<–– pull in our new BloomFilter
+#include "../utils/bloom_filter.hpp"   // ← your BloomFilter implementation
 #include "base.h"
 #include "dynamic_pgm_index.h"
 #include "lipp.h"
 
 /**
  * HybridPGMLipp<…> :
- *  - ingest into a small DPGM model,
- *  - once buffer reaches threshold, swap it out to a flush‐buffer,
- *    reset the model, and background‐merge into LIPP::BulkMerge().
- *  - on lookup, first try DPGM, then fast‐reject via Bloom, then fall back to LIPP.
+ *  - ingest into a small DPGM model + Bloom,
+ *  - once buffer reaches threshold, swap it out, RESET both DPGM+Bloom,
+ *    and background‐merge into LIPP::BulkMerge().
+ *  - on lookup: if Bloom says “no”, go straight to LIPP; otherwise probe DPGM then LIPP.
  */
 template <class KeyType, class SearchClass, size_t pgm_error>
 class HybridPGMLipp : public Base<KeyType> {
@@ -25,9 +25,9 @@ public:
   explicit HybridPGMLipp(const std::vector<int>& params)
     : dp_(params),
       li_(params),
-      flush_threshold_( params.empty() ? 2000000 : params[0] ),
-      bloom_( /* expected items */ flush_threshold_ * 2,
-              /* desired false‐positive rate */ 0.01 ),
+      flush_threshold_( params.empty() ? 500000 : params[0] ),
+      bloom_( /* expected items */ flush_threshold_*2,
+              /* false‐positive rate */ 0.01 ),
       shutting_down_(false)
   {
     flusher_ = std::thread(&HybridPGMLipp::flushLoop, this);
@@ -42,33 +42,33 @@ public:
     flusher_.join();
   }
 
-  // Bulk‐load initial data directly into LIPP
+  // bulk‐load INITIAL dataset into LIPP; do NOT touch bloom here
   uint64_t Build(const std::vector<KeyValue<KeyType>>& data,
                  size_t num_threads)
   {
-    // also populate bloom with everything we just bulk‐loaded:
-    for (auto &kv : data) bloom_.add(kv.key);
     return li_.Build(data, num_threads);
   }
 
-  // point‐lookup: try DPGM first, then Bloom‐filter, then LIPP
+  // point‐lookup: bloom → (DPGM if maybe) → LIPP
   size_t EqualityLookup(const KeyType& key,
                         uint32_t thread_id) const
   {
-    // 1) try tiny DPGM
+    // 1) if bloom says “definitely not in our tiny buffer” skip DPGM
+    if (!bloom_.contains(key)) {
+      // static or missing keys go straight into LIPP
+      return li_.EqualityLookup(key, thread_id);
+    }
+
+    // 2) bloom says “maybe in buffer”, so probe DPGM first
     auto v = dp_.EqualityLookup(key, thread_id);
-    if (v != util::NOT_FOUND && v != util::OVERFLOW)
+    if (v != util::NOT_FOUND && v != util::OVERFLOW) {
       return v;
-
-    // 2) fast‐reject if key is definitely not in the flush‐buffer
-    if (!bloom_.contains(key))
-      return util::NOT_FOUND;
-
-    // 3) fall back to full LIPP lookup
+    }
+    // 3) that was a false‐positive => fall back to LIPP
     return li_.EqualityLookup(key, thread_id);
   }
 
-  // range‐sum across both
+  // range‐sum across both structures
   uint64_t RangeQuery(const KeyType& lo,
                       const KeyType& hi,
                       uint32_t thread_id) const
@@ -77,7 +77,7 @@ public:
          + li_.RangeQuery(lo, hi, thread_id);
   }
 
-  // insert into DPGM + buffer, add to bloom, trigger flush when threshold reached
+  // insert into DPGM + bloom + buffer, trigger flush when threshold reached
   void Insert(const KeyValue<KeyType>& kv,
               uint32_t thread_id)
   {
@@ -87,16 +87,15 @@ public:
     std::lock_guard<std::mutex> lk(mu_);
     active_buf_.push_back(kv);
     if (active_buf_.size() >= flush_threshold_) {
-      // swap‐out and wake background flusher
+      // swap‐out buffer, then reset DPGM+Bloom
       active_buf_.swap(flush_buf_);
       dp_.Reset();
+      bloom_ = decltype(bloom_)(flush_threshold_*2, 0.01);
       cv_.notify_one();
     }
   }
 
   std::string name() const   { return "HybridPGMLipp"; }
-
-  // approximate total memory footprint
   std::size_t size() const   { return dp_.size() + li_.size(); }
 
   bool applicable(bool unique,
@@ -118,10 +117,9 @@ private:
         if (shutting_down_ && flush_buf_.empty()) break;
         flush_buf_.swap(batch);
       }
-      // merge entire batch in one go
+      // one‐shot merge
       li_.BulkMerge(batch);
       batch.clear();
-      // note: bloom still holds all seen keys, so we never clear it
     }
   }
 
