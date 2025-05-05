@@ -1,163 +1,133 @@
+// File: competitors/hybrid_pgm_lipp.h
 #pragma once
 
-#include <atomic>
-#include <mutex>
-#include <thread>
 #include <vector>
-#include <algorithm>
-#include <string>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <atomic>
 
-#include "dynamic_pgm_index.h"  // your DPGM implementation
-#include "lipp.h"               // your LIPP implementation
+#include "../util.h"
+#include "base.h"
+#include "dynamic_pgm_index.h"
+#include "lipp.h"
 
-// HybridPGMLipp:
-//  - collects inserts into a small in-memory DPGM;
-//  - once the buffer hits a threshold, it flushes that batch into a read-optimized LIPP via bulk-merge.
-
-template <
-    typename Key,
-    typename Value,
-    typename Searcher,
-    size_t PGMError = 16
->
-class HybridPGMLipp {
+/**
+ * HybridPGMLipp<Key,SearchClass,PGMError> :
+ *  - ingest into a small DynamicPGM model,
+ *  - once buffer reaches flush_threshold, swap it out,
+ *    reset the model, and background‐merge into LIPP via BulkMerge().
+ */
+template <typename KeyType, typename SearchClass, size_t PGMError = 16>
+class HybridPGMLipp : public Base<KeyType> {
 public:
-  // Construct from benchmark params[0] = flush threshold
   explicit HybridPGMLipp(const std::vector<int>& params)
-    : _flush_threshold(params.empty() ? 100000u : static_cast<size_t>(params[0])),
-      _dpgm(params),
-      _lipp_ptr(nullptr),
-      _shutdown(false)
+    : _flush_threshold(params.empty() ? 500000u : size_t(params[0])),
+      dp_(params),
+      li_(params),
+      shutting_down_(false)
   {
-    // bootstrap an empty LIPP
-    _lipp_ptr.store(new LIPP<Key,Value,true>(), std::memory_order_release);
+    flusher_ = std::thread(&HybridPGMLipp::flushLoop, this);
   }
 
-  // Fallback constructor: supply flush threshold directly
-  explicit HybridPGMLipp(size_t flush_threshold)
-    : _flush_threshold(flush_threshold),
-      _dpgm(std::vector<int>()),
-      _lipp_ptr(nullptr),
-      _shutdown(false)
-  {
-    _lipp_ptr.store(new LIPP<Key,Value,true>(), std::memory_order_release);
-  }
-
-  ~HybridPGMLipp() {
-    _shutdown.store(true, std::memory_order_relaxed);
-    delete _lipp_ptr.load(std::memory_order_acquire);
-  }
-
-  // Insert into DPGM and buffer; flush when threshold reached
-  void Insert(const Key& k, const Value& v) {
-    _dpgm.insert({k, v});
+  ~HybridPGMLipp() override {
     {
-      std::lock_guard<std::mutex> g(_buffer_mu);
-      _buffer.emplace_back(k, v);
+      std::lock_guard<std::mutex> lk(mu_);
+      shutting_down_ = true;
+      cv_.notify_one();
     }
-    if (_buffer.size() >= _flush_threshold) {
-      flush_now();
+    flusher_.join();
+  }
+
+  // Bulk‐load initial data directly into LIPP
+  uint64_t Build(const std::vector<KeyValue<KeyType>>& data,
+                 size_t num_threads) override
+  {
+    return li_.Build(data, num_threads);
+  }
+
+  // point‐lookup: try DynamicPGM first, then LIPP
+  size_t EqualityLookup(const KeyType& key,
+                        uint32_t thread_id) const override
+  {
+    auto v = dp_.EqualityLookup(key, thread_id);
+    if (v != util::NOT_FOUND && v != util::OVERFLOW) return v;
+    return li_.EqualityLookup(key, thread_id);
+  }
+
+  // range‐sum across both
+  uint64_t RangeQuery(const KeyType& lo,
+                      const KeyType& hi,
+                      uint32_t thread_id) const override
+  {
+    return dp_.RangeQuery(lo, hi, thread_id)
+         + li_.RangeQuery(lo, hi, thread_id);
+  }
+
+  // insert into DynamicPGM, trigger flush when threshold reached
+  void Insert(const KeyValue<KeyType>& kv,
+              uint32_t thread_id) override
+  {
+    dp_.Insert(kv, thread_id);
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      flush_buf_.push_back(kv);
+      if (flush_buf_.size() >= _flush_threshold) {
+        // swap out buffer, reset dp_, wake background flusher
+        active_buf_.swap(flush_buf_);
+        dp_.Reset();
+        cv_.notify_one();
+      }
     }
   }
 
-  // Lookup: try DPGM first, then LIPP
-  bool find(const Key& k, Value& out) const {
-    if (_dpgm.find(k, out)) return true;
-    auto ptr = _lipp_ptr.load(std::memory_order_acquire);
-    out = ptr->at(k);
-    return true;
+  std::string name() const override { return "HybridPGMLipp"; }
+
+  // approximate total memory footprint
+  std::size_t size() const override {
+    return dp_.size() + li_.size();
   }
 
-  // ────────── Benchmark harness hooks ────────────────────────────────────
-
-  std::string name() const {
-    return "HybridPGMLipp";
+  bool applicable(bool unique, bool rq, bool ins,
+                  bool mt, const std::string&) const override
+  {
+    return unique && !mt;  // only single‐thread, unique keys
   }
 
-  std::size_t size() const {
-    auto ptr = _lipp_ptr.load(std::memory_order_acquire);
-    return _dpgm.size_in_bytes() + ptr->index_size();
-  }
-
-  bool applicable(bool unique,
-                  bool range_query,
-                  bool insert,
-                  bool multithread,
-                  const std::string&) const {
-    // only use in single-threaded, unique-key workloads
-    return unique && !multithread;
-  }
-
-  std::vector<std::string> variants() const {
+  // used to tag in CSV: PGM‐error & flush threshold
+  std::vector<std::string> variants() const override {
     return {
-      "threshold=" + std::to_string(_flush_threshold),
-      "error="     + std::to_string(PGMError)
+      SearchClass::name(),
+      std::to_string(PGMError),
+      std::to_string(_flush_threshold)
     };
   }
 
 private:
-  // Immediate flush on caller thread
-  void flush_now() {
-    std::vector<std::pair<Key,Value>> batch;
-    {
-      std::lock_guard<std::mutex> g(_buffer_mu);
-      batch.swap(_buffer);
-    }
-    // reset the DPGM
-    _dpgm = DynamicPGM<Key,Searcher,PGMError>(std::vector<int>());
-    background_flush(std::move(batch));
-  }
-
-  // Merge buffer into LIPP via bulk-load
-  void background_flush(std::vector<std::pair<Key,Value>> batch) {
-    // take snapshot of old LIPP
-    auto old = _lipp_ptr.load(std::memory_order_acquire);
-
-    // extract and sort existing data
-    std::vector<std::pair<Key,Value>> all;
-    all.reserve(old->index_size());
-    old->extract_all_rec(old->get_root(), all);
-
-    std::sort(batch.begin(), batch.end(),
-              [](auto &a, auto &b){ return a.first < b.first; });
-
-    // merge two sorted arrays of (key,value)
-    std::vector<Key>   keys;
-    std::vector<Value> vals;
-    keys.reserve(all.size() + batch.size());
-    vals.reserve(all.size() + batch.size());
-    size_t i=0, j=0;
-    while(i<all.size() && j<batch.size()) {
-      if (all[i].first < batch[j].first) {
-        keys.push_back(all[i].first);
-        vals.push_back(all[i].second);
-        ++i;
-      } else {
-        keys.push_back(batch[j].first);
-        vals.push_back(batch[j].second);
-        ++j;
+  void flushLoop() {
+    std::vector<KeyValue<KeyType>> batch;
+    while (true) {
+      {
+        std::unique_lock<std::mutex> lk(mu_);
+        cv_.wait(lk, [&]{ return shutting_down_ || !active_buf_.empty(); });
+        if (shutting_down_ && active_buf_.empty()) break;
+        batch.swap(active_buf_);
       }
+      li_.BulkMerge(batch);
+      batch.clear();
     }
-    while(i<all.size()) { keys.push_back(all[i].first);  vals.push_back(all[i].second);  ++i; }
-    while(j<batch.size()){ keys.push_back(batch[j].first); vals.push_back(batch[j].second); ++j; }
-
-    // build a fresh LIPP
-    auto fresh = new LIPP<Key,Value,true>();
-    fresh->bulk_load(
-      reinterpret_cast<std::pair<Key,Value>*>(keys.data()),
-      int(keys.size())
-    );
-
-    // atomically install
-    _lipp_ptr.store(fresh, std::memory_order_release);
-    delete old;
   }
 
-private:
-  const size_t                              _flush_threshold;
-  DynamicPGM<Key,Searcher,PGMError>        _dpgm;
-  std::atomic<LIPP<Key,Value,true>*>        _lipp_ptr;
-  mutable std::mutex                        _buffer_mu;
-  std::vector<std::pair<Key,Value>>         _buffer;
-  std::atomic<bool>                         _shutdown;
+  const size_t                               _flush_threshold;
+  DynamicPGM<KeyType, SearchClass, PGMError> dp_;
+  Lipp<KeyType>                              li_;
+
+  // double‐buffer for flushed entries
+  std::vector<KeyValue<KeyType>>             active_buf_, flush_buf_;
+
+  // flusher coordination
+  std::mutex                                 mu_;
+  std::condition_variable                    cv_;
+  bool                                       shutting_down_;
+  std::thread                                flusher_;
 };
