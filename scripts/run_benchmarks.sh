@@ -11,23 +11,23 @@ fi
 function execute_uint64_100M() {
     echo "Executing operations for $1 and index $2"
 
-    echo "Executing lookup-only workload"
-    if [[ $2 == "HybridPGMLipp" ]]; then
-        $BENCHMARK ./data/$1 ./data/$1_ops_2M_0.000000rq_0.500000nl_0.000000i \
-            --through --csv --pareto --only $2 -r 3
-    else
-        $BENCHMARK ./data/$1 ./data/$1_ops_2M_0.000000rq_0.500000nl_0.000000i \
-            --through --csv --only $2 -r 3
-    fi
+    # echo "Executing lookup-only workload"
+    # if [[ $2 == "HybridPGMLipp" ]]; then
+    #     $BENCHMARK ./data/$1 ./data/$1_ops_2M_0.000000rq_0.500000nl_0.000000i \
+    #         --through --csv --pareto --only $2 -r 3
+    # else
+    #     $BENCHMARK ./data/$1 ./data/$1_ops_2M_0.000000rq_0.500000nl_0.000000i \
+    #         --through --csv --only $2 -r 3
+    # fi
 
-    echo "Executing insert+lookup workload"
-    if [[ $2 == "HybridPGMLipp" ]]; then
-        $BENCHMARK ./data/$1 ./data/$1_ops_2M_0.000000rq_0.500000nl_0.500000i_0m \
-            --through --csv --pareto --only $2 -r 3
-    else
-        $BENCHMARK ./data/$1 ./data/$1_ops_2M_0.000000rq_0.500000nl_0.500000i_0m \
-            --through --csv --only $2 -r 3
-    fi
+    # echo "Executing insert+lookup workload"
+    # if [[ $2 == "HybridPGMLipp" ]]; then
+    #     $BENCHMARK ./data/$1 ./data/$1_ops_2M_0.000000rq_0.500000nl_0.500000i_0m \
+    #         --through --csv --pareto --only $2 -r 3
+    # else
+    #     $BENCHMARK ./data/$1 ./data/$1_ops_2M_0.000000rq_0.500000nl_0.500000i_0m \
+    #         --through --csv --only $2 -r 3
+    # fi
 
     echo "Executing insert+lookup mixed workload with insert-ratio 0.9"
     if [[ $2 == "HybridPGMLipp" ]]; then
@@ -50,7 +50,8 @@ function execute_uint64_100M() {
 
 mkdir -p ./results
 
-for DATA in fb_100M_public_uint64 books_100M_public_uint64 osmc_100M_public_uint64
+# for DATA in fb_100M_public_uint64 books_100M_public_uint64 osmc_100M_public_uint64
+for DATA in fb_100M_public_uint64 
 do
     for INDEX in LIPP DynamicPGM HybridPGMLipp
     do

@@ -4,59 +4,68 @@
 #include "base.h"
 
 /**
- * LIPP wrapper: add bulk-merge support for batches of keys.
+ * LIPP wrapper: bulk‐load + bulk‐merge support.
  */
 template<class KeyType>
 class Lipp : public Base<KeyType> {
  public:
-  Lipp(const std::vector<int>& params) {}
+  explicit Lipp(const std::vector<int>& params) {}
 
-  // Removed 'override' here
-  uint64_t Build(const std::vector<KeyValue<KeyType>>& data, size_t num_threads) {
-    std::vector<std::pair<KeyType, uint64_t>> loading_data;
-    loading_data.reserve(data.size());
-    for (auto &itm : data)
-      loading_data.emplace_back(itm.key, itm.value);
+  uint64_t Build(const std::vector<KeyValue<KeyType>>& data,
+                 size_t num_threads) 
+  {
+    std::vector<std::pair<KeyType, uint64_t>> loading;
+    loading.reserve(data.size());
+    for (auto &kv : data) loading.emplace_back(kv.key, kv.value);
     return util::timing([&] {
-      lipp_.bulk_load(loading_data.data(), loading_data.size());
+      lipp_.bulk_load(loading.data(), loading.size());
     });
   }
 
-  size_t EqualityLookup(const KeyType& lookup_key, uint32_t thread_id) const {
-    uint64_t value;
-    if (!lipp_.find(lookup_key, value)) return util::NOT_FOUND;
-    return value;
+  size_t EqualityLookup(const KeyType& key,
+                        uint32_t thread_id) const 
+  {
+    uint64_t v;
+    return lipp_.find(key, v) ? v : util::NOT_FOUND;
   }
 
-  uint64_t RangeQuery(const KeyType& lower_key, const KeyType& upper_key, uint32_t thread_id) const {
-    auto it = lipp_.lower_bound(lower_key);
-    uint64_t result = 0;
-    while (it != lipp_.end() && it->comp.data.key <= upper_key) {
-      result += it->comp.data.value;
+  uint64_t RangeQuery(const KeyType& lo,
+                      const KeyType& hi,
+                      uint32_t thread_id) const 
+  {
+    auto it = lipp_.lower_bound(lo);
+    uint64_t sum = 0;
+    while (it != lipp_.end() && it->comp.data.key <= hi) {
+      sum += it->comp.data.value;
       ++it;
     }
-    return result;
+    return sum;
   }
 
-  void Insert(const KeyValue<KeyType>& data, uint32_t thread_id) {
-    lipp_.insert(data.key, data.value);
+  void Insert(const KeyValue<KeyType>& kv,
+              uint32_t thread_id) 
+  {
+    lipp_.insert(kv.key, kv.value);
   }
 
-  std::string name() const { return "LIPP"; }
-  std::size_t size() const { return lipp_.index_size(); }
-  bool applicable(bool unique, bool range_query, bool insert, bool multithread, const std::string&) const {
+  std::string name() const  { return "LIPP"; }
+  std::size_t size() const  { return lipp_.index_size(); }
+
+  bool applicable(bool unique,
+                  bool range_query,
+                  bool insert,
+                  bool multithread,
+                  const std::string&) const 
+  {
     return unique && !multithread;
   }
 
-  /**
-   * Bulk merge a sorted batch into the existing index.
-   * Requires bulk_load_append() in core LIPP.
-   */
+  /// Naïve append of a sorted batch into an existing index.
   void BulkMerge(const std::vector<KeyValue<KeyType>>& batch) {
     std::vector<std::pair<KeyType, uint64_t>> raw;
     raw.reserve(batch.size());
     for (auto &kv : batch) raw.emplace_back(kv.key, kv.value);
-    lipp_.bulk_load_append(raw.data(), raw.size());  // add this API
+    lipp_.bulk_load_append(raw.data(), raw.size());
   }
 
  private:

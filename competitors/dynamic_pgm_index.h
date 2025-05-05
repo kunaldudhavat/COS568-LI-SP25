@@ -33,13 +33,16 @@ class DynamicPGM : public Competitor<KeyType, SearchClass> {
     return build_time;
   }
 
-  size_t EqualityLookup(const KeyType& key, uint32_t thread_id) const  {
+  size_t EqualityLookup(const KeyType& key,
+                        uint32_t thread_id) const 
+  {
     auto it = pgm_.find(key);
     if (it == pgm_.end()) return util::NOT_FOUND;
     return it->value();
   }
 
-  uint64_t RangeQuery(const KeyType& lo, const KeyType& hi,
+  uint64_t RangeQuery(const KeyType& lo,
+                      const KeyType& hi,
                       uint32_t thread_id) const 
   {
     auto it = pgm_.lower_bound(lo);
@@ -51,7 +54,9 @@ class DynamicPGM : public Competitor<KeyType, SearchClass> {
     return sum;
   }
 
-  void Insert(const KeyValue<KeyType>& kv, uint32_t thread_id)  {
+  void Insert(const KeyValue<KeyType>& kv,
+              uint32_t thread_id) 
+  {
     pgm_.insert(kv.key, kv.value);
   }
 
@@ -71,7 +76,7 @@ class DynamicPGM : public Competitor<KeyType, SearchClass> {
     return { SearchClass::name(), std::to_string(pgm_error) };
   }
 
-  // Extract and clear the library's internal insertion buffer
+  /// Extract-and-clear PGM’s internal insertion buffer.
   std::vector<KeyValue<KeyType>> ExtractBuffer() {
     auto raw = pgm_.extract_buffer();
     std::vector<KeyValue<KeyType>> out;
@@ -80,14 +85,15 @@ class DynamicPGM : public Competitor<KeyType, SearchClass> {
     return out;
   }
 
-  // **New**: completely reset the PGM to empty
+  /// Completely reset PGM to empty
   void Reset() {
     pgm_ = decltype(pgm_)();
   }
 
  private:
   DynamicPGMIndex<KeyType, uint64_t, SearchClass,
-                   PGMIndex<KeyType, SearchClass, pgm_error, 16>> pgm_;
+                   PGMIndex<KeyType, SearchClass, pgm_error, 16>>
+      pgm_;
 };
 
 #endif  // TLI_DYNAMIC_PGM_H

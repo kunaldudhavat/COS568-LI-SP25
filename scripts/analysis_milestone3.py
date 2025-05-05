@@ -4,7 +4,8 @@ import os
 
 def milestone3_analysis():
     # Datasets and mixed workload suffixes
-    datasets = ['fb', 'osmc', 'books']
+    # datasets = ['fb', 'osmc', 'books']
+    datasets = ['fb']
     workloads = {
         '10pct_lookup': '0.100000i_0m_mix',  # 10% lookup, 90% insert
         '90pct_lookup': '0.900000i_0m_mix'   # 90% lookup, 10% insert

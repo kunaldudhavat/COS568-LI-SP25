@@ -1,8 +1,7 @@
-// File: competitors/hybrid_pgm_lipp.h
 #ifndef TLI_HYBRID_PGM_LIPP_H
 #define TLI_HYBRID_PGM_LIPP_H
 
-#include <vector>
+#include <algorithm>
 #include <thread>
 #include <mutex>
 #include <condition_variable>
@@ -13,11 +12,14 @@
 #include "lipp.h"
 
 /**
- * Hybrid: DPGM for ingestion + background flush into LIPP
+ * HybridPGMLipp (Milestone 3): 
+ *   • all inserts go into PGM  
+ *   • once PGM’s built‐in buffer ≥ threshold, extract, sort, Reset()  
+ *   • hand that batch off to a background thread that does BulkMerge into LIPP  
  */
 template <class KeyType, class SearchClass, size_t pgm_error>
 class HybridPGMLipp : public Base<KeyType> {
- public:
+public:
   explicit HybridPGMLipp(const std::vector<int>& params)
     : dp_(params),
       li_(params),
@@ -36,24 +38,22 @@ class HybridPGMLipp : public Base<KeyType> {
     flusher_.join();
   }
 
-  // Build into LIPP only
   uint64_t Build(const std::vector<KeyValue<KeyType>>& data,
                  size_t num_threads) 
   {
-    uint64_t t = li_.Build(data, num_threads);
-    return t;
+    // initial bulk‐load into LIPP only
+    return li_.Build(data, num_threads);
   }
 
-  // Lookup: try small DPGM first, then LIPP
   size_t EqualityLookup(const KeyType& key,
                         uint32_t thread_id) const 
   {
-    size_t v = dp_.EqualityLookup(key, thread_id);
-    if (v != util::NOT_FOUND && v != util::OVERFLOW) return v;
+    auto v = dp_.EqualityLookup(key, thread_id);
+    if (v != util::NOT_FOUND && v != util::OVERFLOW)
+      return v;
     return li_.EqualityLookup(key, thread_id);
   }
 
-  // Range sum across both
   uint64_t RangeQuery(const KeyType& lo,
                       const KeyType& hi,
                       uint32_t thread_id) const 
@@ -62,26 +62,32 @@ class HybridPGMLipp : public Base<KeyType> {
          + li_.RangeQuery(lo, hi, thread_id);
   }
 
-  // Insert into DPGM + schedule buffer‐flush
   void Insert(const KeyValue<KeyType>& kv,
               uint32_t thread_id) 
   {
     dp_.Insert(kv, thread_id);
-    {
-      std::lock_guard<std::mutex> lk(mu_);
-      buf_active_.push_back(kv);
-      if (buf_active_.size() >= flush_threshold_) {
-        buf_active_.swap(buf_flush_);
-        cv_.notify_one();
-        dp_.Reset();  // clear DPGM so it stays small
+
+    // once PGM’s buffer is big enough, pull it out
+    auto pending = dp_.ExtractBuffer();
+    if (pending.size() >= flush_threshold_) {
+      dp_.Reset();
+
+      // sort ascending, so LIPP’s bulk merge is cheap
+      std::sort(pending.begin(), pending.end(),
+                [](auto &a, auto &b){ return a.key < b.key; });
+
+      {
+        std::lock_guard<std::mutex> lk(mu_);
+        buf_flush_.insert(buf_flush_.end(),
+                          std::make_move_iterator(pending.begin()),
+                          std::make_move_iterator(pending.end()));
       }
+      cv_.notify_one();
     }
   }
 
   std::string name() const  { return "HybridPGMLipp"; }
-
-  std::size_t size() const {
-    // approximate total memory
+  std::size_t size() const  {
     return dp_.size() + li_.size();
   }
 
@@ -94,7 +100,7 @@ class HybridPGMLipp : public Base<KeyType> {
     return unique && !multithread;
   }
 
- private:
+private:
   void flushLoop() {
     std::vector<KeyValue<KeyType>> local;
     while (true) {
@@ -104,7 +110,9 @@ class HybridPGMLipp : public Base<KeyType> {
         if (shutdown_ && buf_flush_.empty()) break;
         buf_flush_.swap(local);
       }
-      // bulk‐merge into LIPP
+      // re‐sort in case multiple flushes coalesced
+      std::sort(local.begin(), local.end(),
+                [](auto &a, auto &b){ return a.key < b.key; });
       li_.BulkMerge(local);
       local.clear();
     }
@@ -113,8 +121,7 @@ class HybridPGMLipp : public Base<KeyType> {
   DynamicPGM<KeyType, SearchClass, pgm_error> dp_;
   Lipp<KeyType>                              li_;
 
-  // Double buffer for flush batches
-  std::vector<KeyValue<KeyType>> buf_active_, buf_flush_;
+  std::vector<KeyValue<KeyType>> buf_flush_;
   size_t                         flush_threshold_;
   std::mutex                     mu_;
   std::condition_variable        cv_;
