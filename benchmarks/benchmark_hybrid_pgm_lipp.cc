@@ -11,21 +11,29 @@ void benchmark_64_hybrid_pgm_lipp(tli::Benchmark<uint64_t>& benchmark,
                                   bool pareto,
                                   const std::vector<int>& /*params*/) {
     // PGM‐error settings to try
-    static const std::vector<int> errors = { 8, 16, 32 };
+    static const std::vector<size_t> errors     = { 8, 16, 32 };
     // Rebuild thresholds to sweep
-    static const std::vector<int> thresholds = {
+    static const std::vector<size_t> thresholds = {
         50'000, 100'000, 200'000, 500'000,
         1'000'000, 2'000'000, 5'000'000
     };
 
     if (!pareto) {
         // Single “sweet‐spot” run: threshold=2M, error=16
-        benchmark.template Run<HybridPGMLipp<uint64_t, Searcher, 16>>({ 2000000 });
+        benchmark.template Run<
+            HybridPGMLipp<uint64_t,   // Key type
+                          uint64_t,   // Value type
+                          Searcher,   // Search strategy
+                          16          // PGM‐error
+                         >
+        >({ 2000000 });
     } else {
         // Full Pareto sweep: error × threshold
-        for (int e : errors) {
-            for (int t : thresholds) {
-                benchmark.template Run<HybridPGMLipp<uint64_t, Searcher, e>>({ t });
+        for (auto e : errors) {
+            for (auto t : thresholds) {
+                benchmark.template Run<
+                    HybridPGMLipp<uint64_t,uint64_t,Searcher,e>
+                >({ int(t) });
             }
         }
     }
@@ -37,9 +45,13 @@ template <int record>
 void benchmark_64_hybrid_pgm_lipp(tli::Benchmark<uint64_t>& benchmark,
                                   const std::string& filename) {
     if (filename.find("100M") != std::string::npos) {
-        benchmark.template Run<HybridPGMLipp<uint64_t,
-                                             BranchingBinarySearch<record>,
-                                             16>>();
+        benchmark.template Run<
+            HybridPGMLipp<uint64_t,            // Key type
+                          uint64_t,            // Value type
+                          BranchingBinarySearch<record>,
+                          16                  // PGM‐error
+                         >
+        >();
     }
 }
 
