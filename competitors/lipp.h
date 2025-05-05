@@ -66,26 +66,20 @@ class Lipp : public Base<KeyType> {
    *  4) rebuild via a single bulk_load().
    */
   void BulkMerge(const std::vector<KeyValue<KeyType>>& batch) {
-    // 1) extract all existing entries
-    auto existing = lipp_.extract_all();  // returns vector<pair<KeyType,uint64_t>>
-    std::vector<KeyValue<KeyType>> all;
-    all.reserve(existing.size() + batch.size());
-    for (auto &p : existing) {
-      all.push_back({p.first, p.second});
+    // 1) extract all existing (key,value) pairs
+    auto all = lipp_.extract_all();  // std::vector<std::pair<KeyType,uint64_t>>
+    // 2) append the new batch, converting each packed KeyValue to an unpacked pair
+    all.reserve(all.size() + batch.size());
+    for (auto &kv : batch) {
+      all.emplace_back( static_cast<KeyType>(kv.key),
+                        static_cast<uint64_t>(kv.value) );
     }
-    // 2) append new batch
-    all.insert(all.end(), batch.begin(), batch.end());
     // 3) sort by key
     std::sort(all.begin(), all.end(),
-              [](auto &a, auto &b){ return a.key < b.key; });
+              [](auto &a, auto &b){ return a.first < b.first; });
     // 4) rebuild in one shot
-    std::vector<std::pair<KeyType,uint64_t>> raw;
-    raw.reserve(all.size());
-    for (auto &kv : all) {
-      raw.emplace_back(kv.key, kv.value);
-    }
-    util::timing([&] {
-      lipp_.bulk_load(raw.data(), raw.size());
+    util::timing([&]{
+      lipp_.bulk_load(all.data(), all.size());
     });
   }
 
