@@ -3,9 +3,8 @@ import matplotlib.pyplot as plt
 import os
 
 def milestone3_analysis():
-    # We only have 'fb' for now
-    # datasets = ['fb', 'osmc', 'books']
-    datasets = ['fb']
+    datasets = ['fb', 'osmc', 'books']
+    # datasets = ['fb']
 
     # Map keys → pretty labels (insert % first)
     workloads = {
