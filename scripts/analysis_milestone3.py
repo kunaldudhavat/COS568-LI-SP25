@@ -10,12 +10,12 @@ def milestone3_analysis():
     # Map keys → pretty labels (insert % first)
     workloads = {
         '10pct_insert': '10% insert (10% insert, 90% lookup)',
-        # '90pct_insert': '90% insert (90% insert, 10% lookup)',  # commented out
+        '90pct_insert': '90% insert (90% insert, 10% lookup)',
     }
     # These suffixes must match your generated CSV filenames
     suffixes = {
         '10pct_insert': '0.100000i_0m_mix',
-        # '90pct_insert': '0.900000i_0m_mix',  # commented out
+        '90pct_insert': '0.900000i_0m_mix',
     }
 
     # Raw index names → nicer tick labels
