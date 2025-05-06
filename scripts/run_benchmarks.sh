@@ -29,14 +29,14 @@ function execute_uint64_100M() {
     #         --through --csv --only $2 -r 3
     # fi
 
-    # echo "Executing insert+lookup mixed workload with insert-ratio 0.9"
-    # if [[ $2 == "HybridPGMLipp" ]]; then
-    #     $BENCHMARK ./data/$1 ./data/$1_ops_2M_0.000000rq_0.500000nl_0.900000i_0m_mix \
-    #         --through --csv --pareto --only $2 -r 3
-    # else
-    #     $BENCHMARK ./data/$1 ./data/$1_ops_2M_0.000000rq_0.500000nl_0.900000i_0m_mix \
-    #         --through --csv --only $2 -r 3
-    # fi
+    echo "Executing insert+lookup mixed workload with insert-ratio 0.9"
+    if [[ $2 == "HybridPGMLipp" ]]; then
+        $BENCHMARK ./data/$1 ./data/$1_ops_2M_0.000000rq_0.500000nl_0.900000i_0m_mix \
+            --through --csv --pareto --only $2 -r 3
+    else
+        $BENCHMARK ./data/$1 ./data/$1_ops_2M_0.000000rq_0.500000nl_0.900000i_0m_mix \
+            --through --csv --only $2 -r 3
+    fi
 
     echo "Executing insert+lookup mixed workload with insert-ratio 0.1"
     if [[ $2 == "HybridPGMLipp" ]]; then
@@ -53,7 +53,7 @@ mkdir -p ./results
 # for DATA in fb_100M_public_uint64 books_100M_public_uint64 osmc_100M_public_uint64
 for DATA in fb_100M_public_uint64 
 do
-    for INDEX in LIPP HybridPGMLipp
+    for INDEX in HybridPGMLipp
     do
         execute_uint64_100M ${DATA} $INDEX
     done
