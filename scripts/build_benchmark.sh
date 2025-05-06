@@ -48,4 +48,4 @@ else
     exit 1
 fi
 
-echo "Minimal benchmark binary is ready for DynamicPGM, B+Tree and LIPP benchmarking!"
+echo "Minimal benchmark binary is ready for DynamicPGM, HybridPGMLipp and LIPP benchmarking!"
